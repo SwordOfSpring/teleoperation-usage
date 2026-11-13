@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>平行操控客户用量</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TELEOPERATION USAGE</p>
+          <h1>平行操控客户用量</h1>
+          <p class="subtitle">按客户、日期与角色查看音频、视频和音视频用量。</p>
+        </div>
+        <div class="topbar-meta">
+          <span id="freshness" class="status-pill muted">等待数据</span>
+          <button id="download-csv" class="button ghost" type="button">下载当前 CSV</button>
+        </div>
+      </header>
+
+      <section class="toolbar panel" aria-label="数据筛选">
+        <div class="segmented" role="tablist" aria-label="数据周期">
+          <button class="segment active" data-mode="daily" role="tab" aria-selected="true">每日</button>
+          <button class="segment" data-mode="weekly" role="tab" aria-selected="false">每周</button>
+        </div>
+        <label class="control">
+          <span>开始日期</span>
+          <input id="start-date" type="date" />
+        </label>
+        <label class="control">
+          <span>结束日期</span>
+          <input id="end-date" type="date" />
+        </label>
+        <label class="control grow">
+          <span>客户或 VID</span>
+          <input id="customer-search" type="search" placeholder="搜索客户名称或 VID" />
+        </label>
+        <button id="reset-filters" class="button subtle" type="button">重置筛选</button>
+      </section>
+
+      <div id="state-banner" class="state-banner" role="status" hidden></div>
+
+      <section class="kpi-grid" aria-label="关键指标">
+        <article class="kpi-card accent-blue">
+          <div class="kpi-top"><span>音频用量</span><span class="icon-square">A</span></div>
+          <strong id="kpi-audio">—</strong>
+          <small>主播 + 观众</small>
+        </article>
+        <article class="kpi-card accent-violet">
+          <div class="kpi-top"><span>视频用量</span><span class="icon-square">V</span></div>
+          <strong id="kpi-video">—</strong>
+          <small>主播 + 观众</small>
+        </article>
+        <article class="kpi-card accent-green">
+          <div class="kpi-top"><span>音视频总量</span><span class="icon-square">Σ</span></div>
+          <strong id="kpi-total">—</strong>
+          <small id="kpi-period">当前筛选范围</small>
+        </article>
+        <article class="kpi-card accent-orange">
+          <div class="kpi-top"><span>活跃客户</span><span class="icon-square">C</span></div>
+          <strong id="kpi-customers">—</strong>
+          <small>有用量记录的客户</small>
+        </article>
+      </section>
+
+      <section class="main-grid">
+        <article class="panel chart-panel">
+          <div class="panel-heading">
+            <div><p class="panel-kicker">TREND</p><h2>用量趋势</h2></div>
+            <div class="legend"><span><i class="dot total"></i>总量</span><span><i class="dot host"></i>主播</span><span><i class="dot viewer"></i>观众</span></div>
+          </div>
+          <div id="trend-chart" class="chart-wrap" aria-label="用量趋势图"></div>
+        </article>
+        <article class="panel ranking-panel">
+          <div class="panel-heading">
+            <div><p class="panel-kicker">RANKING</p><h2>客户排行</h2></div>
+            <span class="panel-note">按总量</span>
+          </div>
+          <div id="ranking" class="ranking-list"></div>
+        </article>
+      </section>
+
+      <section class="panel detail-panel">
+        <div class="panel-heading">
+          <div><p class="panel-kicker">DETAIL</p><h2>用量明细</h2></div>
+          <span id="row-count" class="panel-note">0 行</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th><th>VID</th><th>客户</th><th>销售</th>
+                <th class="number">主播音频</th><th class="number">观众音频</th><th class="number">音频总量</th>
+                <th class="number">主播视频</th><th class="number">观众视频</th><th class="number">视频总量</th><th class="number">音视频总量</th>
+              </tr>
+            </thead>
+            <tbody id="detail-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="footer">数据来自 Datalego · value 原样透传，不做单位换算</footer>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
