@@ -2,6 +2,8 @@
 
 这是一个静态 HTML 数据看板和 Datalego 查询脚本，用于查看客户每天或每周的音频、视频、音视频用量。
 
+入口：https://teleoperation-usage.ofkalf.workers.dev/
+
 ## 项目结构
 
 ```text
