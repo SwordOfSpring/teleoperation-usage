@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+.idea/
+.vscode/
+
+# Local credentials and query intermediates
+.hci-auth-token
+usage/raw/
+usage/*_raw.csv
+
+# Local customer mapping and generated usage data
+customer/
+usage/
