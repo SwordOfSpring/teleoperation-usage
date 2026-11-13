@@ -179,26 +179,22 @@ def customer_map(customers: Iterable[dict[str, str]]) -> dict[str, dict[str, str
     return {row["vid"]: row for row in customers}
 
 
-def _sql_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
 def build_usage_sql(start: str, end: str, vids: Iterable[str]) -> str:
     vid_values = [_clean_vid(vid) for vid in vids]
     if not vid_values:
         raise ValueError("至少需要一个 VID")
-    vid_sql = ", ".join(_sql_literal(vid) for vid in sorted(set(vid_values)))
+    vid_sql = ", ".join(str(int(vid)) for vid in sorted(set(vid_values), key=int))
     sku_sql = ", ".join(str(sku) for sku in SKU_IDS)
     return f"""SELECT
     date,
-    CAST(vid AS STRING) AS vid,
+    vid,
     CAST(sku AS INT) AS sku,
     SUM(value) AS value
 FROM ods.sku
 WHERE date BETWEEN {int(start)} AND {int(end)}
-  AND CAST(vid AS STRING) IN ({vid_sql})
+  AND vid IN ({vid_sql})
   AND sku IN ({sku_sql})
-GROUP BY date, CAST(vid AS STRING), CAST(sku AS INT)
+GROUP BY date, vid, CAST(sku AS INT)
 ORDER BY date ASC, vid ASC, sku ASC""".strip()
 
 

@@ -21,7 +21,11 @@ class UsagePipelineTests(unittest.TestCase):
     def test_build_usage_sql_contains_date_vid_and_skus(self):
         sql = build_usage_sql("20261101", "20261102", ["1002", "1001", "1002"])
         self.assertIn("date BETWEEN 20261101 AND 20261102", sql)
-        self.assertIn("'1001', '1002'", sql)
+        self.assertIn("vid IN (1001, 1002)", sql)
+        self.assertIn("    vid,", sql)
+        self.assertIn("GROUP BY date, vid, CAST(sku AS INT)", sql)
+        self.assertNotIn("CAST(vid AS STRING)", sql)
+        self.assertNotIn("'1001'", sql)
         self.assertIn("sku IN (1002, 1003, 2002, 2003, 2004, 2005, 2006, 2007)", sql)
 
     def test_aggregate_rows_splits_audio_video_by_role(self):
