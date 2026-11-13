@@ -24,6 +24,7 @@
       <nav class="view-tabs" role="tablist" aria-label="看板视图">
         <button class="view-tab active" data-view="overview" role="tab" aria-selected="true">总览</button>
         <button class="view-tab" data-view="weekly" role="tab" aria-selected="false">每周</button>
+        <button class="view-tab" data-view="daily" role="tab" aria-selected="false">每日</button>
       </nav>
 
       <section class="toolbar panel" aria-label="数据筛选">
@@ -34,6 +35,7 @@
         <div id="weekly-controls" class="control-group" hidden>
           <label class="control"><span>自然周</span><select id="week-select"></select></label>
         </div>
+        <div id="daily-controls" class="control-group" hidden><label class="control daily-context"><span>对比基准</span><span class="toolbar-note">最新 day &amp; 前一可用日</span></label></div>
         <label class="control grow"><span>客户或 VID</span><input id="customer-search" type="search" placeholder="搜索客户名称或 VID" /></label>
         <button id="reset-filters" class="button subtle" type="button">重置筛选</button>
       </section>
@@ -53,7 +55,11 @@
           <article class="panel ranking-panel"><div class="panel-heading"><div><p class="panel-kicker">RANKING</p><h2>客户排行</h2></div><span class="panel-note">按总量</span></div><div id="overview-ranking" class="ranking-list"></div></article>
         </section>
 
-        <section class="panel chart-panel customer-trend-panel"><div class="panel-heading"><div><p class="panel-kicker">CUSTOMER TREND</p><h2>客户用量趋势</h2><p class="chart-unit">单位：秒 · 展示筛选范围内用量最高的 8 个客户</p></div><div id="overview-customer-legend" class="legend"></div></div><div id="overview-customer-trend-chart" class="chart-wrap" aria-label="不同客户用量趋势图"></div></section>
+        <section class="customer-trend-grid" aria-label="客户用量趋势">
+          <article class="panel chart-panel customer-trend-panel"><div class="panel-heading"><div><p class="panel-kicker">CUSTOMER TOTAL</p><h2>客户总量趋势</h2><p class="chart-unit">单位：秒 · 所有客户</p></div><div id="overview-customer-total-legend" class="legend" aria-label="客户总量趋势图例"></div></div><div id="overview-customer-total-chart" class="chart-wrap" aria-label="所有客户总量趋势图"></div></article>
+          <article class="panel chart-panel customer-trend-panel"><div class="panel-heading"><div><p class="panel-kicker">CUSTOMER AUDIO</p><h2>客户音频趋势</h2><p class="chart-unit">单位：秒 · 所有客户</p></div><div id="overview-customer-audio-legend" class="legend" aria-label="客户音频趋势图例"></div></div><div id="overview-customer-audio-chart" class="chart-wrap" aria-label="所有客户音频趋势图"></div></article>
+          <article class="panel chart-panel customer-trend-panel"><div class="panel-heading"><div><p class="panel-kicker">CUSTOMER VIDEO</p><h2>客户视频趋势</h2><p class="chart-unit">单位：秒 · 所有客户</p></div><div id="overview-customer-video-legend" class="legend" aria-label="客户视频趋势图例"></div></div><div id="overview-customer-video-chart" class="chart-wrap" aria-label="所有客户视频趋势图"></div></article>
+        </section>
 
         <section class="panel detail-panel"><div class="panel-heading"><div><p class="panel-kicker">DETAIL</p><h2>总览明细</h2><p class="panel-note">日期筛选使用上方“开始日期 / 结束日期”，表格支持滚动查看</p></div><span id="overview-row-count" class="panel-note">0 行</span></div><div class="table-wrap detail-scroll"><table><thead><tr><th>日期</th><th>VID</th><th>客户</th><th>销售</th><th class="number">主播音频</th><th class="number">观众音频</th><th class="number">音频总量</th><th class="number">主播视频</th><th class="number">观众视频</th><th class="number">视频总量</th><th class="number">音视频总量</th></tr></thead><tbody id="overview-detail-body"></tbody></table></div></section>
       </section>
@@ -69,7 +75,20 @@
         <section id="weekly-analysis" class="analysis-grid" aria-label="周环比分析"></section>
         <section class="main-grid"><article class="panel chart-panel"><div class="panel-heading"><div><p class="panel-kicker">WEEK TREND</p><h2>周内每日趋势</h2><p class="chart-unit">单位：秒</p></div><div id="weekly-legend" class="legend" aria-label="周趋势图例"></div></div><div id="weekly-trend-chart" class="chart-wrap" aria-label="周内用量趋势图"></div></article><article class="panel ranking-panel"><div class="panel-heading"><div><p class="panel-kicker">WEEK RANKING</p><h2>本周客户排行</h2></div><span class="panel-note">按总量</span></div><div id="weekly-ranking" class="ranking-list"></div></article></section>
 
-        <section class="panel detail-panel"><div class="panel-heading"><div><p class="panel-kicker">WEEK DETAIL</p><h2>自然周明细</h2></div><span id="weekly-row-count" class="panel-note">0 行</span></div><div class="table-wrap"><table><thead><tr><th>自然周</th><th>VID</th><th>客户</th><th>销售</th><th class="number">主播音频</th><th class="number">观众音频</th><th class="number">音频总量</th><th class="number">主播视频</th><th class="number">观众视频</th><th class="number">视频总量</th><th class="number">音视频总量</th></tr></thead><tbody id="weekly-detail-body"></tbody></table></div></section>
+        <section class="panel detail-panel"><div class="panel-heading"><div><p class="panel-kicker">WEEK DETAIL</p><h2>自然周明细</h2><p class="panel-note">环比对比上一可用自然周</p></div><span id="weekly-row-count" class="panel-note">0 行</span></div><div class="table-wrap"><table class="weekly-detail-table"><thead><tr><th>自然周</th><th>VID</th><th>客户</th><th>销售</th><th class="number">主播音频</th><th class="number">观众音频</th><th class="number">音频总量</th><th class="number">主播视频</th><th class="number">观众视频</th><th class="number">视频总量</th><th class="number">音视频总量</th><th class="number">音频环比</th><th class="number">视频环比</th><th class="number">音视频环比</th></tr></thead><tbody id="weekly-detail-body"></tbody></table></div></section>
+      </section>
+
+      <section id="daily-view" class="view-panel" aria-label="每日" hidden>
+        <section class="kpi-grid" aria-label="每日关键指标">
+          <article class="kpi-card accent-blue"><div class="kpi-top"><span>最新日音频</span><span class="icon-square">A</span></div><strong id="daily-kpi-audio">—</strong><small>主播 + 观众</small></article>
+          <article class="kpi-card accent-violet"><div class="kpi-top"><span>最新日视频</span><span class="icon-square">V</span></div><strong id="daily-kpi-video">—</strong><small>主播 + 观众</small></article>
+          <article class="kpi-card accent-green"><div class="kpi-top"><span>最新日音视频</span><span class="icon-square">Σ</span></div><strong id="daily-kpi-total">—</strong><small id="daily-kpi-period">等待 daily 数据</small></article>
+          <article class="kpi-card accent-orange"><div class="kpi-top"><span>最新日活跃客户</span><span class="icon-square">C</span></div><strong id="daily-kpi-customers">—</strong><small>有用量记录的客户</small></article>
+        </section>
+
+        <section class="panel daily-analysis-panel"><div class="panel-heading"><div><p class="panel-kicker">DAILY ANALYSIS</p><h2>每日数据解读</h2><p class="chart-unit">最新日与前一可用日的用量变化</p></div></div><div id="daily-analysis" class="analysis-copy"></div><div id="daily-alerts" class="daily-alerts" aria-live="polite"></div></section>
+
+        <section class="panel detail-panel"><div class="panel-heading"><div><p class="panel-kicker">DAILY DETAIL</p><h2>最新 daily 明细</h2><p class="panel-note">按客户对比最新日与前一个有数据的日期</p></div><span id="daily-row-count" class="panel-note">0 行</span></div><div class="table-wrap"><table class="daily-detail-table"><thead><tr><th>客户</th><th>VID</th><th>销售</th><th class="number">最新日音频</th><th class="number">前一日音频</th><th class="number">音频环比</th><th class="number">最新日视频</th><th class="number">前一日视频</th><th class="number">视频环比</th><th class="number">最新日总量</th><th class="number">前一日总量</th><th class="number">音视频环比</th></tr></thead><tbody id="daily-detail-body"></tbody></table></div></section>
       </section>
 
       <footer class="footer">数据来自 Datalego · daily 优先，weekly 对完整周校验后兜底 · value 原样透传</footer>
@@ -6091,6 +6110,7 @@
   }
 }
 </script>
+    <script src="customer-metrics.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

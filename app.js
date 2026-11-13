@@ -1,7 +1,8 @@
 (function () {
   "use strict";
 
-  var state = { view: "overview", payload: null, selectedWeek: "", overviewRows: [], weeklyRows: [], weeklyDailyRows: [] };
+  var state = { view: "overview", payload: null, selectedWeek: "", overviewRows: [], weeklyRows: [], weeklyDailyRows: [], dailyRows: [] };
+  var customerMetrics = window.TeleoperationDashboardMetrics;
   var $ = function (id) { return document.getElementById(id); };
   var num = function (value) { return Number(value || 0); };
   var formatNumber = function (value) { return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(num(value)); };
@@ -49,6 +50,7 @@
     state.payload = payload;
     state.overviewRows = (payload.overview || payload.daily || []).map(function (row) { return Object.assign({}, row); });
     state.weeklyRows = (payload.weekly || []).map(function (row) { return Object.assign({}, row); });
+    state.dailyRows = (payload.daily || []).map(function (row) { return Object.assign({}, row); });
     state.weeklyDailyRows = (payload.weeklyDaily || []).map(function (row) {
       var copy = Object.assign({}, row);
       copy.week = copy.week || weekFromDate(copy.date);
@@ -89,8 +91,41 @@
     });
   }
 
+  function overviewDateFiltered() {
+    var start = $("start-date").value.replace(/-/g, "");
+    var end = $("end-date").value.replace(/-/g, "");
+    return state.overviewRows.filter(function (row) {
+      var key = String(row.date || "").replace(/-/g, "");
+      return (!start || key >= start) && (!end || key <= end);
+    });
+  }
+
   function weeklyFiltered() {
     return state.weeklyRows.filter(function (row) { return (!state.selectedWeek || row.week === state.selectedWeek) && searchable(row); });
+  }
+
+  function aggregateCustomerRows(rows) {
+    var grouped = new Map();
+    (rows || []).forEach(function (row) {
+      var vid = String(row.vid || "");
+      if (!vid) return;
+      var item = grouped.get(vid);
+      if (!item) {
+        item = Object.assign({}, row, { vid: vid });
+        ["audio_host", "audio_viewer", "audio_total", "video_host", "video_viewer", "video_total", "host_total", "viewer_total", "total"].forEach(function (key) { item[key] = num(row[key]); });
+        grouped.set(vid, item);
+        return;
+      }
+      ["audio_host", "audio_viewer", "audio_total", "video_host", "video_viewer", "video_total", "host_total", "viewer_total", "total"].forEach(function (key) { item[key] += num(row[key]); });
+    });
+    return grouped;
+  }
+
+  function dailyPair() {
+    var pair = customerMetrics.latestDailyPair(state.dailyRows);
+    pair.latestRows = pair.latestRows.filter(searchable);
+    pair.previousRows = pair.previousRows.filter(searchable);
+    return pair;
   }
 
   function sumRows(rows) {
@@ -266,33 +301,36 @@
     redraw();
   }
 
-  function renderCustomerTrend(rows) {
-    var totals = new Map();
-    rows.forEach(function (row) {
-      var item = totals.get(row.vid) || { name: row.company_name || "未登记客户", total: 0 };
-      item.total += num(row.total);
-      totals.set(row.vid, item);
+  function renderCustomerTrend(rows, referenceRows) {
+    var customers = state.payload && state.payload.customers || [];
+    var query = $("customer-search").value.trim().toLowerCase();
+    var chartRows = customerMetrics.selectTrendRows(rows, referenceRows);
+    [
+      { metric: "total", chartId: "overview-customer-total-chart", legendId: "overview-customer-total-legend" },
+      { metric: "audio", chartId: "overview-customer-audio-chart", legendId: "overview-customer-audio-legend" },
+      { metric: "video", chartId: "overview-customer-video-chart", legendId: "overview-customer-video-legend" }
+    ].forEach(function (item) {
+      var series = customerMetrics.buildCustomerSeries(rows, customers, item.metric, query);
+      if (!series.length) {
+        $(item.legendId).innerHTML = "";
+        $(item.chartId).innerHTML = emptyState("暂无客户趋势", "筛选范围内没有可展示的客户。");
+        return;
+      }
+      renderLineChart(item.chartId, chartRows, "date", function (value) { return dateText(value).slice(5); }, { series: series, showArea: false, fillMissingDates: true, legendHostId: item.legendId });
     });
-    var colors = ["#3e63dd", "#1e9b74", "#7c65d7", "#d78131", "#d45d79", "#2e8ca6", "#9a6dd7", "#6c8f3d"];
-    var top = Array.from(totals.entries()).sort(function (a, b) { return b[1].total - a[1].total; }).slice(0, 8);
-    var series = top.map(function (entry, index) {
-      return { key: entry[0], label: entry[1].name, color: colors[index], value: function (row) { return row.vid === entry[0] ? num(row.total) : 0; } };
-    });
-    if (!series.length) {
-      $("overview-customer-legend").innerHTML = "";
-      $("overview-customer-trend-chart").innerHTML = emptyState("暂无客户趋势", "筛选范围内没有可展示的客户。");
-      return;
-    }
-    renderLineChart("overview-customer-trend-chart", rows, "date", function (value) { return dateText(value).slice(5); }, { series: series, showArea: false, fillMissingDates: true, legendHostId: "overview-customer-legend" });
   }
 
   function renderRanking(hostId, rows) {
-    var host = $(hostId), totals = new Map();
-    rows.forEach(function (row) { var item = totals.get(row.vid) || { name: row.company_name, total: 0 }; item.total += num(row.total); totals.set(row.vid, item); });
-    var ranked = Array.from(totals.entries()).sort(function (a, b) { return b[1].total - a[1].total; }).slice(0, 8);
+    var host = $(hostId), customers = state.payload && state.payload.customers || [];
+    var query = $("customer-search").value.trim().toLowerCase();
+    var ranked = customerMetrics.buildCustomerRankings(rows, customers, query);
     if (!ranked.length) { host.innerHTML = emptyState("暂无排行", "筛选范围内没有可展示的客户。"); return; }
-    var max = ranked[0][1].total || 1;
-    host.innerHTML = ranked.map(function (entry) { var vid = entry[0], item = entry[1]; return '<div class="rank-row"><div class="rank-meta"><span class="rank-label">' + escapeHtml(item.name || "未登记客户") + " · " + escapeHtml(vid) + '</span><span class="rank-value">' + formatNumber(item.total) + '</span></div><div class="rank-track"><div class="rank-fill" style="width:' + Math.max(2, item.total / max * 100) + '%"></div></div></div>'; }).join("");
+    var max = ranked[0].total || 1;
+    host.innerHTML = ranked.map(function (item) {
+      var audioWidth = item.total ? item.audio / max * 100 : 0;
+      var videoWidth = item.total ? item.video / max * 100 : 0;
+      return '<div class="rank-row"><div class="rank-meta"><span class="rank-label">' + escapeHtml(item.name || "未登记客户") + " · " + escapeHtml(item.vid) + '</span><span class="rank-value">' + formatNumber(item.total) + '</span></div><div class="rank-track" aria-label="音频 ' + formatNumber(item.audio) + '，视频 ' + formatNumber(item.video) + '"><span class="rank-fill rank-audio" style="width:' + audioWidth + '%"></span><span class="rank-fill rank-video" style="width:' + videoWidth + '%"></span></div><div class="rank-breakdown"><span><i class="rank-dot rank-dot-audio"></i>音频 ' + formatNumber(item.audio) + '</span><span><i class="rank-dot rank-dot-video"></i>视频 ' + formatNumber(item.video) + '</span></div></div>';
+    }).join("");
   }
 
   function renderOverviewTable(rows) {
@@ -304,12 +342,24 @@
     }).join("");
   }
 
-  function renderWeeklyTable(rows) {
+  function renderWeeklyTable(rows, previousRows) {
     var body = $("weekly-detail-body");
-    $("weekly-row-count").textContent = rows.length + " 行";
-    if (!rows.length) { body.innerHTML = '<tr><td colspan="11">' + emptyState("暂无周数据", "等 weekly 脚本完成一个自然周后查看。") + "</td></tr>"; return; }
-    body.innerHTML = rows.slice().sort(function (a, b) { return String(b.total).localeCompare(String(a.total)); }).map(function (row) {
-      return '<tr><td>' + escapeHtml(row.week) + '</td><td>' + escapeHtml(row.vid) + '</td><td>' + escapeHtml(row.company_name) + '</td><td>' + escapeHtml(row.sale) + '</td>' + metricCells(row) + '</tr>';
+    var customers = state.payload && state.payload.customers || [];
+    var query = $("customer-search").value.trim().toLowerCase();
+    var comparisons = customerMetrics.buildCustomerComparisons(rows, previousRows, customers, query);
+    $("weekly-row-count").textContent = comparisons.length + " 个客户";
+    if (!comparisons.length) { body.innerHTML = '<tr><td colspan="14">' + emptyState("暂无周数据", "等 weekly 脚本完成一个自然周后查看。") + "</td></tr>"; return; }
+    var details = aggregateCustomerRows(rows);
+    var customerMap = new Map(customers.map(function (customer) { return [String(customer.vid), customer]; }));
+    body.innerHTML = comparisons.map(function (comparison) {
+      var row = details.get(comparison.vid) || { week: state.selectedWeek, vid: comparison.vid, company_name: comparison.name, sale: "", audio_host: 0, audio_viewer: 0, audio_total: 0, video_host: 0, video_viewer: 0, video_total: 0, total: 0 };
+      var customer = customerMap.get(comparison.vid);
+      row.company_name = row.company_name || (customer && customer.company_name) || comparison.name;
+      row.sale = row.sale || (customer && customer.sale) || "";
+      row.audio_total = comparison.current.audio;
+      row.video_total = comparison.current.video;
+      row.total = comparison.current.total;
+      return '<tr><td>' + escapeHtml(row.week || state.selectedWeek) + '</td><td>' + escapeHtml(row.vid) + '</td><td>' + escapeHtml(row.company_name) + '</td><td>' + escapeHtml(row.sale) + '</td>' + metricCells(row) + deltaCells(comparison) + '</tr>';
     }).join("");
   }
 
@@ -318,10 +368,24 @@
   }
 
   function deltaText(current, previous) {
-    if (!previous) return "—";
+    if (previous == null) return "—";
     var delta = current - previous;
+    if (previous === 0) return delta === 0 ? "—" : (delta > 0 ? "↑ " : "↓ ") + formatNumber(Math.abs(delta)) + "（新增）";
     var pct = previous ? delta / previous * 100 : 0;
     return (delta >= 0 ? "↑ " : "↓ ") + formatNumber(Math.abs(delta)) + "（" + (delta >= 0 ? "+" : "") + pct.toFixed(1) + "%）";
+  }
+
+  function deltaClass(current, previous) {
+    if (previous == null || current === previous) return "delta-neutral";
+    return current > previous ? "delta-positive" : "delta-negative";
+  }
+
+  function deltaMarkup(current, previous) {
+    return '<span class="delta ' + deltaClass(current, previous) + '">' + escapeHtml(deltaText(current, previous)) + '</span>';
+  }
+
+  function deltaCells(comparison) {
+    return '<td class="number">' + deltaMarkup(comparison.current.audio, comparison.previous.audio) + '</td><td class="number">' + deltaMarkup(comparison.current.video, comparison.previous.video) + '</td><td class="number">' + deltaMarkup(comparison.current.total, comparison.previous.total) + '</td>';
   }
 
   function renderWeeklyAnalysis(currentRows, previousRows) {
@@ -341,7 +405,7 @@
     var totals = sumRows(rows);
     renderKpis("overview", rows, "当前筛选范围");
     renderLineChart("overview-trend-chart", rows, "date", function (value) { return dateText(value).slice(5); }, { fillMissingDates: true, legendHostId: "overview-legend" });
-    renderCustomerTrend(rows);
+    renderCustomerTrend(rows, overviewDateFiltered());
     renderRanking("overview-ranking", rows);
     renderOverviewTable(rows);
     $("overview-kpi-period").textContent = rows.length ? dateText(rows.map(function (row) { return row.date; }).sort()[0]) + " ~ " + dateText(rows.map(function (row) { return row.date; }).sort().slice(-1)[0]) : "当前筛选范围";
@@ -359,27 +423,88 @@
     renderWeeklyAnalysis(rows, previousRows);
     renderLineChart("weekly-trend-chart", weekDaily, "date", function (value) { return dateText(value).slice(5); }, { legendHostId: "weekly-legend" });
     renderRanking("weekly-ranking", rows);
-    renderWeeklyTable(rows);
+    renderWeeklyTable(rows, previousRows);
+  }
+
+  function renderDailyAnalysis(pair, latestRows, previousRows, comparisons) {
+    var current = sumRows(latestRows), previous = previousRows.length ? sumRows(previousRows) : null;
+    var increases = comparisons.filter(function (item) { return item.delta.total > 0; }).sort(function (a, b) { return b.delta.total - a.delta.total; });
+    var decreases = comparisons.filter(function (item) { return item.delta.total < 0; }).sort(function (a, b) { return a.delta.total - b.delta.total; });
+    var audioShare = current.total ? (current.audio / current.total * 100).toFixed(1) : "0.0";
+    var videoShare = current.total ? (current.video / current.total * 100).toFixed(1) : "0.0";
+    var lines = [];
+    if (!pair.latestDate) {
+      lines.push({ className: "analysis-context", text: "当前没有可用的 daily 数据，请先运行 daily 查询脚本。" }, { className: "analysis-summary", text: "每日数据解读将在下一次 daily 数据生成后自动填充。" });
+    } else {
+      lines.push({ className: "analysis-context", text: "最新数据日期：" + dateText(pair.latestDate) + "；对比日期：" + (pair.previousDate ? dateText(pair.previousDate) : "暂无前一可用日") + "。" }, { className: "analysis-summary", text: "最新日音视频总量为 " + formatNumber(current.total) + " 秒" + (previous ? "，环比 " + deltaText(current.total, previous.total) + "。" : "。") }, { className: "analysis-structure", text: "用量结构：音频占 " + audioShare + "%（" + formatNumber(current.audio) + " 秒），视频占 " + videoShare + "%（" + formatNumber(current.video) + " 秒）。" }, { className: "analysis-change", text: "客户变化：" + (increases.length ? increases[0].name + " 增加最多（" + deltaText(increases[0].current.total, increases[0].previous.total) + "）" : "暂无客户用量增加") + "；" + (decreases.length ? decreases[0].name + " 减少最多（" + deltaText(decreases[0].current.total, decreases[0].previous.total) + "）" : "暂无客户用量减少") + "。" }, { className: "analysis-activity", text: "活跃客户数：最新日 " + current.customers.size + " 家" + (previous ? "，环比 " + deltaText(current.customers.size, previous.customers.size) + "。" : "，暂无前一可用日对比。") });
+    }
+    $("daily-analysis").innerHTML = lines.map(function (line) { return '<p class="' + line.className + '">' + escapeHtml(line.text) + "</p>"; }).join("");
+  }
+
+  function renderDailyAlerts(pair, comparisons) {
+    var host = $("daily-alerts");
+    if (!pair.latestDate || !pair.previousDate) {
+      host.innerHTML = '<div class="daily-alert-empty"><strong>异常警告</strong><span>暂无前一可用日，暂时无法判断下滑异常。</span></div>';
+      return;
+    }
+    var alerts = customerMetrics.buildDailyAlerts(comparisons);
+    if (!alerts.length) {
+      host.innerHTML = '<div class="daily-alert-clear"><strong>异常警告</strong><span>未发现音视频总量下滑 30% 以上且前一日用量达到 1,000 秒的客户。</span></div>';
+      return;
+    }
+    host.innerHTML = '<div class="daily-alert-heading"><strong>异常警告</strong><span>音视频总量显著下滑客户</span></div>' + alerts.map(function (alert) {
+      return '<div class="daily-alert-row"><span class="daily-alert-name">' + escapeHtml(alert.name) + '</span><span class="daily-alert-detail">环比下降 ' + (alert.ratio * 100).toFixed(1) + '%，减少 ' + formatNumber(alert.drop) + ' 秒</span></div>';
+    }).join("");
+  }
+
+  function renderDailyTable(pair) {
+    var body = $("daily-detail-body");
+    var customers = state.payload && state.payload.customers || [];
+    var query = $("customer-search").value.trim().toLowerCase();
+    var comparisons = customerMetrics.buildCustomerComparisons(pair.latestRows, pair.previousRows, customers, query);
+    $("daily-row-count").textContent = comparisons.length + " 个客户";
+    if (!pair.latestDate || !comparisons.length) { body.innerHTML = '<tr><td colspan="12">' + emptyState("暂无 daily 数据", "运行 daily 查询脚本并重新生成看板数据后查看。") + "</td></tr>"; return comparisons; }
+    var customerMap = new Map(customers.map(function (customer) { return [String(customer.vid), customer]; }));
+    body.innerHTML = comparisons.map(function (comparison) {
+      var customer = customerMap.get(comparison.vid) || {};
+      return '<tr><td>' + escapeHtml(comparison.name) + '</td><td>' + escapeHtml(comparison.vid) + '</td><td>' + escapeHtml(customer.sale || "") + '</td><td class="number">' + formatNumber(comparison.current.audio) + '</td><td class="number">' + formatNumber(comparison.previous.audio) + '</td><td class="number">' + deltaMarkup(comparison.current.audio, comparison.previous.audio) + '</td><td class="number">' + formatNumber(comparison.current.video) + '</td><td class="number">' + formatNumber(comparison.previous.video) + '</td><td class="number">' + deltaMarkup(comparison.current.video, comparison.previous.video) + '</td><td class="number">' + formatNumber(comparison.current.total) + '</td><td class="number">' + formatNumber(comparison.previous.total) + '</td><td class="number">' + deltaMarkup(comparison.current.total, comparison.previous.total) + '</td></tr>';
+    }).join("");
+    return comparisons;
+  }
+
+  function renderDaily() {
+    var rawPair = customerMetrics.latestDailyPair(state.dailyRows);
+    var pair = { latestDate: rawPair.latestDate, previousDate: rawPair.previousDate, latestRows: rawPair.latestRows.filter(searchable), previousRows: rawPair.previousRows.filter(searchable) };
+    var current = sumRows(pair.latestRows);
+    renderKpis("daily", pair.latestRows, pair.latestDate ? (dateText(pair.latestDate) + (pair.previousDate ? " 对比 " + dateText(pair.previousDate) : "")) : "等待 daily 数据");
+    var comparisons = renderDailyTable(pair);
+    renderDailyAnalysis(pair, pair.latestRows, pair.previousRows, comparisons);
+    renderDailyAlerts(pair, comparisons);
   }
 
   function renderAll() {
-    if (state.view === "overview") renderOverview(); else renderWeekly();
+    if (state.view === "overview") renderOverview(); else if (state.view === "weekly") renderWeekly(); else renderDaily();
   }
 
   function switchView(view) {
     state.view = view;
     $("overview-view").hidden = view !== "overview";
     $("weekly-view").hidden = view !== "weekly";
+    $("daily-view").hidden = view !== "daily";
     $("overview-controls").hidden = view !== "overview";
     $("weekly-controls").hidden = view !== "weekly";
+    $("daily-controls").hidden = view !== "daily";
     document.querySelectorAll(".view-tab").forEach(function (button) { var active = button.dataset.view === view; button.classList.toggle("active", active); button.setAttribute("aria-selected", active ? "true" : "false"); });
     renderAll();
   }
 
   function downloadCsv() {
-    var rows = state.view === "overview" ? overviewFiltered() : weeklyFiltered();
+    var rows;
+    if (state.view === "overview") rows = overviewFiltered();
+    else if (state.view === "weekly") rows = weeklyFiltered();
+    else rows = dailyPair().latestRows;
     if (!rows.length) return;
-    var columns = state.view === "overview" ? ["date", "vid", "company_name", "sale", "audio_host", "audio_viewer", "audio_total", "video_host", "video_viewer", "video_total", "total"] : ["week", "vid", "company_name", "sale", "audio_host", "audio_viewer", "audio_total", "video_host", "video_viewer", "video_total", "total"];
+    var columns = state.view === "overview" ? ["date", "vid", "company_name", "sale", "audio_host", "audio_viewer", "audio_total", "video_host", "video_viewer", "video_total", "total"] : state.view === "weekly" ? ["week", "vid", "company_name", "sale", "audio_host", "audio_viewer", "audio_total", "video_host", "video_viewer", "video_total", "total"] : ["date", "vid", "company_name", "sale", "audio_host", "audio_viewer", "audio_total", "video_host", "video_viewer", "video_total", "total"];
     var csv = [columns.join(",")].concat(rows.map(function (row) { return columns.map(function (key) { return '"' + String(row[key] == null ? "" : row[key]).replace(/"/g, '""') + '"'; }).join(","); })).join("\n");
     var link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
@@ -401,6 +526,7 @@
       state.overviewRows = [];
       state.weeklyRows = [];
       state.weeklyDailyRows = [];
+      state.dailyRows = [];
       setFreshness(null);
       renderAll();
       showBanner("页面没有内嵌数据，也无法读取 usage/dashboard.json。请先运行 daily 或 weekly 脚本生成数据。", true);
