@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily DataLego usage query entry point."""
+"""Daily DataLego usage query entry point; its data is the overview's primary source."""
 
 from pathlib import Path
 import sys

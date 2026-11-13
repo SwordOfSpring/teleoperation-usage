@@ -1,6 +1,6 @@
 # 平行操控客户用量看板
 
-这是一个静态 HTML 数据看板和 Datalego 查询脚本，用于查看客户每天或每周的音频、视频、音视频用量。
+这是一个静态 HTML 数据看板和 Datalego 查询脚本，用于查看客户总览和自然周的音频、视频、音视频用量。daily 脚本负责实时取数，weekly 脚本查询完整自然周并参与校验；同一天、同一 VID 的结果不一致时，页面总览使用 weekly 数据兜底。
 
 入口：https://teleoperation-usage.ofkalf.workers.dev/
 
@@ -21,6 +21,7 @@ teleoperation-usage/
 │  ├─ raw/                           # 每次 DataLego 查询的原始 CSV（本地保留）
 │  ├─ daily_usage.csv                # 每日聚合数据
 │  ├─ weekly_usage.csv               # 每周聚合数据
+│  ├─ overview_usage.csv             # daily 与 weekly 校验后的总览数据
 │  └─ dashboard.json                 # HTML 看板读取的数据
 ├─ index.html
 ├─ styles.css
@@ -118,6 +119,12 @@ python scripts/weekly_usage.py
 python scripts/weekly_usage.py --start 20261102 --end 20261108
 ```
 
+也可以直接按 ISO 自然周指定查询范围：
+
+```powershell
+python scripts/weekly_usage.py --2026-W25
+```
+
 运行前只查看 SQL，不访问 Datalego：
 
 ```powershell
@@ -129,8 +136,12 @@ python scripts/weekly_usage.py --start 20261102 --end 20261108 --dry-run
 
 1. 将 DataLego 原始结果保存到 `usage/raw/`。
 2. 合并到 `usage/daily_raw.csv` 或 `usage/weekly_raw.csv`。
-3. 重建 `usage/daily_usage.csv`、`usage/weekly_usage.csv`。
-4. 更新 `usage/dashboard.json`。
+3. 重建 `usage/daily_usage.csv`、`usage/weekly_usage.csv` 和 `usage/overview_usage.csv`。
+4. 对同一 `date + vid` 的 daily 与 weekly 数据进行校验：weekly 已覆盖且不一致时，`overview` 使用 weekly 结果并标记 `data_source=weekly_fallback`。
+5. 更新 `usage/dashboard.json`，并把同一份数据嵌入 `index.html`，因此页面可以直接双击打开，也可以部署到 Cloudflare 等静态托管服务。
+6. 查询成功后生成中文 Git 提交说明，提交更新后的 `index.html` 并推送到 `origin`；如果 GitHub 凭据或网络不可用，脚本会报告推送错误。
+
+weekly 查询会用同一查询范围内的 `date + vid + sku` 原始行校验 daily 数据。数值一致时保留 daily 数据；数值不一致或 daily 缺失时，用 weekly 结果覆盖或补充 daily 原始数据，再重建总览。
 
 重复查询同一日期范围会按 `(date, vid, sku)` 覆盖原始行，不会重复累加。
 ## 漏跑后的自动补数
@@ -147,7 +158,7 @@ python scripts/weekly_usage.py --start 20261102 --end 20261108 --dry-run
 
 ## 查看静态页面
 
-页面是纯静态文件，需要通过静态服务器访问，避免浏览器限制 `file://` 下的 JSON 加载：
+页面优先读取 `index.html` 内嵌的看板数据，因此可以直接双击打开。若页面尚未运行脚本生成内嵌数据，或需要加载旧版 `usage/dashboard.json`，再使用静态服务器：
 
 ```powershell
 python -m http.server 8000
@@ -161,13 +172,16 @@ http://localhost:8000/
 
 页面功能：
 
-- 每日 / 每周切换
-- 日期范围筛选
+- 总览 / 每周切换
+- 总览日期范围筛选
+- 自然周选择
 - 客户名 / VID 搜索
 - 音频、视频、音视频总量 KPI
-- 主播 / 观众趋势折线图
+- 总览完整趋势和周内每日趋势
+- 不同客户用量趋势和折线节点详情
+- 每周音视频环比分析
 - 客户总量排行
-- 明细表
+- 可按日期筛选并滚动查看明细表
 - 当前筛选结果 CSV 下载
 - 数据为空、数据过期和 JSON 加载失败提示
 

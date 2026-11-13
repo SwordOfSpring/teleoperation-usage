@@ -7,6 +7,8 @@ import argparse
 import csv
 import json
 import os
+import re
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -51,6 +53,13 @@ DAILY_COLUMNS = [
     "host_total", "viewer_total", "total",
 ]
 WEEKLY_COLUMNS = ["week", *DAILY_COLUMNS[1:]]
+OVERVIEW_COLUMNS = [*DAILY_COLUMNS, "data_source"]
+USAGE_METRICS = (
+    "audio_host", "audio_viewer", "audio_total",
+    "video_host", "video_viewer", "video_total",
+    "host_total", "viewer_total", "total",
+)
+INDEX_PATH = PROJECT_ROOT / "index.html"
 
 
 def _date_from_text(value: str) -> date:
@@ -67,6 +76,33 @@ def previous_complete_week(today: date | None = None) -> tuple[str, str]:
     this_monday = today - timedelta(days=today.weekday())
     start = this_monday - timedelta(days=7)
     return date_text(start), date_text(start + timedelta(days=6))
+
+
+def week_label_range(label: str) -> tuple[str, str]:
+    """Resolve an ISO week label such as 2026-W25 to its Monday-Sunday range."""
+    match = re.fullmatch(r"(\d{4})-W(\d{2})", str(label or "").upper())
+    if not match:
+        raise ValueError("自然周必须使用 YYYY-Wxx 格式，例如 2026-W25")
+    year, week = int(match.group(1)), int(match.group(2))
+    try:
+        monday = date.fromisocalendar(year, week, 1)
+    except ValueError as exc:
+        raise ValueError(f"无效的自然周：{label}") from exc
+    return date_text(monday), date_text(monday + timedelta(days=6))
+
+
+def normalize_week_argument(argv: list[str] | None) -> list[str] | None:
+    """Convert the compact weekly flag --YYYY-Wxx to argparse's --week form."""
+    if argv is None:
+        return None
+    normalized: list[str] = []
+    for item in argv:
+        match = re.fullmatch(r"--(\d{4}-W\d{2})", str(item).upper())
+        if match:
+            normalized.extend(["--week", match.group(1)])
+        else:
+            normalized.append(item)
+    return normalized
 
 
 def yesterday_range(today: date | None = None) -> tuple[str, str]:
@@ -260,6 +296,41 @@ def aggregate_rows(
     return sorted(result, key=lambda item: (str(item[period_key]), str(item["vid"])))
 
 
+def _amounts_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Compare usage values without losing decimal precision through float conversion."""
+    return all(_decimal(left.get(key)) == _decimal(right.get(key)) for key in USAGE_METRICS)
+
+
+def reconcile_overview(
+    daily_rows: Iterable[dict[str, Any]],
+    weekly_daily_rows: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Prefer daily data, using completed-week data when the same day/VID disagrees."""
+    daily_map = {(str(row["date"]), str(row["vid"])): dict(row) for row in daily_rows}
+    weekly_map = {(str(row["date"]), str(row["vid"])): dict(row) for row in weekly_daily_rows}
+    output: list[dict[str, Any]] = []
+    fallback_count = 0
+    checked_count = 0
+    for key in sorted(set(daily_map) | set(weekly_map)):
+        daily_row = daily_map.get(key)
+        weekly_row = weekly_map.get(key)
+        if weekly_row is not None:
+            if daily_row is not None:
+                checked_count += 1
+            selected = weekly_row if daily_row is None or not _amounts_match(daily_row, weekly_row) else daily_row
+            source = "weekly_fallback" if selected is weekly_row else "daily"
+            if source == "weekly_fallback":
+                fallback_count += 1
+        else:
+            selected = daily_row
+            source = "daily"
+        if selected is None:
+            continue
+        selected["data_source"] = source
+        output.append(selected)
+    return output, {"checked": checked_count, "fallback": fallback_count}
+
+
 def _read_raw_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -317,6 +388,102 @@ def _merge_raw_csv(path: Path, rows: Iterable[dict[str, Any]]) -> list[dict[str,
     return result
 
 
+def reconcile_daily_raw(
+    daily_rows: Iterable[dict[str, Any]],
+    weekly_rows: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, str]], dict[str, int]]:
+    """Replace daily raw values when the completed-week query disagrees."""
+    daily_map = {
+        (str(row["date"]), _clean_vid(row["vid"]), str(int(row["sku"]))): {
+            "date": str(row["date"]),
+            "vid": _clean_vid(row["vid"]),
+            "sku": str(int(row["sku"])),
+            "value": str(row["value"]),
+        }
+        for row in daily_rows
+    }
+    weekly_map = {
+        (str(row["date"]), _clean_vid(row["vid"]), str(int(row["sku"]))): {
+            "date": str(row["date"]),
+            "vid": _clean_vid(row["vid"]),
+            "sku": str(int(row["sku"])),
+            "value": str(row["value"]),
+        }
+        for row in weekly_rows
+    }
+    overwritten = 0
+    checked = 0
+    added = len(set(weekly_map) - set(daily_map))
+    for key, weekly_row in weekly_map.items():
+        daily_row = daily_map.get(key)
+        if daily_row is None:
+            daily_map[key] = weekly_row
+            continue
+        checked += 1
+        if _decimal(daily_row["value"]) != _decimal(weekly_row["value"]):
+            daily_map[key] = weekly_row
+            overwritten += 1
+    result = sorted(daily_map.values(), key=lambda row: (row["date"], row["vid"], int(row["sku"])))
+    return result, {"checked": checked, "overwritten": overwritten, "added": added}
+
+
+def should_update_index(mode: str, reconciliation: dict[str, int] | None = None) -> bool:
+    """Return whether this query should refresh the embedded dashboard page."""
+    if mode == "daily":
+        return True
+    if mode == "weekly":
+        reconciliation = reconciliation or {}
+        return bool(
+            int(reconciliation.get("overwritten", 0))
+            or int(reconciliation.get("added", 0))
+        )
+    raise ValueError(f"不支持的查询模式：{mode}")
+
+
+def github_commit_message(mode: str, start: str, end: str, reconciliation: dict[str, int] | None = None) -> str:
+    """Build a concise Chinese commit message for generated dashboard data."""
+    reconciliation = reconciliation or {}
+    period = "周" if mode == "weekly" else "日"
+    overwritten = int(reconciliation.get("overwritten", 0))
+    detail = f"；覆盖 {overwritten} 条 daily 数据" if mode == "weekly" else ""
+    return f"用量数据更新：{period}查询 {start} ~ {end}{detail}"
+
+
+def push_dashboard_updates(message: str) -> bool:
+    """Commit the embedded dashboard and push it to the configured GitHub remote."""
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", "index.html"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if not status.stdout.strip():
+        print("看板文件没有变化，跳过 GitHub 提交和推送。")
+        return False
+    subprocess.run(["git", "add", "--", "index.html"], cwd=PROJECT_ROOT, check=True)
+    commit = subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if commit.returncode != 0:
+        detail = (commit.stderr or commit.stdout).strip()
+        raise DataLegoError(f"Git 提交失败：{detail}")
+    push = subprocess.run(
+        ["git", "push", "origin", "HEAD"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if push.returncode != 0:
+        detail = (push.stderr or push.stdout).strip()
+        raise DataLegoError(f"GitHub 推送失败：{detail}")
+    print(f"已提交并推送 GitHub：{message}")
+    return True
+
+
 def _write_rows(path: Path, rows: Iterable[dict[str, Any]], columns: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -331,31 +498,73 @@ def write_dashboard_data(
     weekly_rows: list[dict[str, Any]],
     *,
     generated_at: str,
+    overview_rows: list[dict[str, Any]] | None = None,
+    weekly_daily_rows: list[dict[str, Any]] | None = None,
+    reconciliation: dict[str, int] | None = None,
+    update_index: bool = True,
 ) -> Path:
+    overview_rows = overview_rows if overview_rows is not None else daily_rows
+    weekly_daily_rows = weekly_daily_rows if weekly_daily_rows is not None else []
+    reconciliation = reconciliation or {"checked": 0, "fallback": 0}
     _write_rows(USAGE_DIR / "daily_usage.csv", daily_rows, DAILY_COLUMNS)
     _write_rows(USAGE_DIR / "weekly_usage.csv", weekly_rows, WEEKLY_COLUMNS)
+    _write_rows(USAGE_DIR / "overview_usage.csv", overview_rows, OVERVIEW_COLUMNS)
     payload = {
         "generatedAt": generated_at,
         "valueUnit": "passthrough",
         "customers": customers,
+        "overview": overview_rows,
         "daily": daily_rows,
         "weekly": weekly_rows,
+        "weeklyDaily": weekly_daily_rows,
+        "reconciliation": reconciliation,
     }
     output = USAGE_DIR / "dashboard.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if update_index:
+        embed_dashboard_data(payload)
     return output
 
 
-def update_dashboard(customers: list[dict[str, str]]) -> Path:
+def embed_dashboard_data(payload: dict[str, Any], path: Path | None = None) -> None:
+    """Write the latest dashboard payload into index.html for file:// and static hosting."""
+    path = path or INDEX_PATH
+    if not path.exists():
+        return
+    marker_start = '<script id="teleoperation-data" type="application/json">'
+    marker_end = "</script>"
+    source = path.read_text(encoding="utf-8")
+    start = source.find(marker_start)
+    if start < 0:
+        return
+    content_start = start + len(marker_start)
+    end = source.find(marker_end, content_start)
+    if end < 0:
+        raise DataLegoError(f"index.html 缺少 teleoperation-data 结束标记：{path}")
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2).replace("</", "<\\/")
+    updated = source[:content_start] + "\n" + encoded + "\n" + source[end:]
+    path.write_text(updated, encoding="utf-8")
+
+
+def update_dashboard(customers: list[dict[str, str]], *, update_index: bool = True) -> Path:
     mapping = customer_map(customers)
     daily_raw = _read_raw_csv(USAGE_DIR / "daily_raw.csv")
     weekly_raw = _read_raw_csv(USAGE_DIR / "weekly_raw.csv")
+    daily_rows = aggregate_rows(daily_raw, mapping, "date")
+    weekly_daily_rows = aggregate_rows(weekly_raw, mapping, "date")
+    for row in weekly_daily_rows:
+        row["week"] = _week_label(str(row["date"]))
+    overview_rows, reconciliation = reconcile_overview(daily_rows, weekly_daily_rows)
     return write_dashboard_data(
         customers,
-        aggregate_rows(daily_raw, mapping, "date"),
+        daily_rows,
         aggregate_rows(weekly_raw, mapping, "week"),
         generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        overview_rows=overview_rows,
+        weekly_daily_rows=weekly_daily_rows,
+        reconciliation=reconciliation,
+        update_index=update_index,
     )
 
 
@@ -363,11 +572,11 @@ def run_query(start: str, end: str, mode: str, engine: str = "hive") -> Path:
     customers = load_customers()
     mapping = customer_map(customers)
     sql = build_usage_sql(start, end, mapping)
-    print(f"查询范围：{start} ~ {end}，VID：{len(mapping)} 个")
+    print(f"[{mode}] 1/6 查询范围：{start} ~ {end}，客户 VID：{len(mapping)} 个")
     auth.init()
     job_id, status, _ = submit_query(sql, engine=engine)
-    print(f"DataLego job={job_id}，初始状态={status}")
-    result = wait_for_job(job_id, label=f"{mode} usage", engine=engine)
+    print(f"[{mode}] 2/6 DataLego job={job_id}，初始状态：{status}")
+    result = wait_for_job(job_id, label=f"{mode} 查询", engine=engine)
     if result is None:
         raise DataLegoError("DataLego 查询失败")
     raw_rows = normalize_result(result)
@@ -375,10 +584,32 @@ def run_query(start: str, end: str, mode: str, engine: str = "hive") -> Path:
     result_to_csv(result, raw_path)
     merged_path = USAGE_DIR / f"{mode}_raw.csv"
     _merge_raw_csv(merged_path, raw_rows)
-    update_dashboard(customers)
+    print(f"[{mode}] 3/6 查询结果：{len(raw_rows)} 条，已写入 {raw_path}")
+    reconciliation: dict[str, int] = {}
+    if mode == "weekly":
+        daily_path = USAGE_DIR / "daily_raw.csv"
+        daily_rows = _read_raw_csv(daily_path)
+        reconciled_daily, reconciliation = reconcile_daily_raw(daily_rows, raw_rows)
+        if reconciliation["overwritten"] or reconciliation["added"]:
+            _merge_raw_csv(daily_path, reconciled_daily)
+        print(
+            "[weekly] 4/6 daily 对账："
+            f"检查 {reconciliation['checked']} 条，"
+            f"覆盖 {reconciliation['overwritten']} 条，"
+            f"补充 {reconciliation['added']} 条。"
+        )
+    update_index = should_update_index(mode, reconciliation)
+    update_dashboard(customers, update_index=update_index)
     record_query_end(mode, end)
-    print(f"写入 {len(raw_rows)} 条原始行：{raw_path}")
-    print(f"看板数据已更新：{USAGE_DIR / 'dashboard.json'}")
+    print(f"[{mode}] 5/6 本地看板数据已更新：{USAGE_DIR / 'dashboard.json'}")
+    if update_index:
+        pushed = push_dashboard_updates(github_commit_message(mode, start, end, reconciliation))
+        if pushed:
+            print(f"[{mode}] 6/6 index.html 已更新并推送 GitHub。")
+        else:
+            print(f"[{mode}] 6/6 index.html 无变化，跳过 GitHub 推送。")
+    else:
+        print(f"[{mode}] 6/6 daily 与 weekly 数据一致，跳过 index.html 更新和 GitHub 推送。")
     return raw_path
 
 
@@ -386,6 +617,8 @@ def build_parser(mode: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Run {mode} teleoperation usage query")
     parser.add_argument("--start", help="开始日期 YYYYMMDD")
     parser.add_argument("--end", help="结束日期 YYYYMMDD")
+    if mode == "weekly":
+        parser.add_argument("--week", help="指定 ISO 自然周 YYYY-Wxx")
     parser.add_argument("--engine", default="hive", help="DataLego query engine")
     parser.add_argument("--dry-run", action="store_true", help="只输出 SQL，不执行查询")
     parser.add_argument("--login", action="store_true", help="执行一次 Agora OAuth 登录")
@@ -395,16 +628,24 @@ def build_parser(mode: str) -> argparse.ArgumentParser:
 
 def main(mode: str, argv: list[str] | None = None) -> int:
     parser = build_parser(mode)
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(normalize_week_argument(raw_argv) if mode == "weekly" else raw_argv)
     if args.login:
         interactive_login()
         return 0
+    if mode == "weekly" and getattr(args, "week", None) and (args.start or args.end):
+        parser.error("--week 不能与 --start/--end 同时使用")
     if bool(args.start) != bool(args.end):
         parser.error("--start 和 --end 必须同时提供")
+    if mode == "weekly" and getattr(args, "week", None):
+        try:
+            start, end = week_label_range(args.week)
+        except ValueError as exc:
+            parser.error(str(exc))
     customers = load_customers()
-    if args.start and args.end:
+    if not (mode == "weekly" and getattr(args, "week", None)) and args.start and args.end:
         start, end = args.start, args.end
-    else:
+    elif not (mode == "weekly" and getattr(args, "week", None)):
         last_end = last_query_end(mode)
         query_range = (
             weekly_query_range(last_end=last_end)

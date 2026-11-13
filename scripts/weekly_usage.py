@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Weekly DataLego usage query entry point."""
+"""Weekly DataLego usage entry point; complete weeks validate and backfill daily data."""
 
 from pathlib import Path
 import sys
