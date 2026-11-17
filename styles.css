@@ -78,10 +78,12 @@ h2 { font-size: 18px; }
 .chart-unit { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
 .chart-grid { stroke: #edf0f5; stroke-width: 1; } .chart-axis-line { stroke: #d9deea; stroke-width: 1; } .chart-axis { fill: var(--muted); font-size: 10px; } .chart-line { fill: none; stroke-width: 2.75; stroke-linecap: round; stroke-linejoin: round; } .chart-area { pointer-events: none; }
 .chart-hit-area { fill: transparent; cursor: crosshair; }
+.chart-wrap svg { touch-action: pan-y; }
 .chart-crosshair { stroke: #9aa8ca; stroke-width: 1; stroke-dasharray: 4 4; pointer-events: none; }
 .chart-point { cursor: pointer; opacity: .8; stroke: var(--card); stroke-width: 2; transition: opacity .15s, r .15s; }
 .chart-point:hover, .chart-point:focus { opacity: 1; outline: none; r: 6; }
-.chart-tooltip { position: absolute; z-index: 2; top: 8px; transform: translateX(-50%); min-width: 148px; max-width: 240px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: color-mix(in srgb, var(--card) 94%, transparent); box-shadow: 0 10px 28px rgba(33,47,82,.16); font-size: 12px; pointer-events: none; }
+.chart-tooltip { position: fixed; z-index: 10; min-width: 148px; max-width: 280px; max-height: 300px; overflow-y: auto; overscroll-behavior: contain; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: color-mix(in srgb, var(--card) 98%, transparent); box-shadow: 0 10px 28px rgba(33,47,82,.16); font-size: 12px; pointer-events: none; }
+.chart-tooltip.is-pinned { pointer-events: auto; }
 .chart-tooltip-title { margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .chart-tooltip-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; line-height: 1.7; }
 .chart-tooltip-row span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }

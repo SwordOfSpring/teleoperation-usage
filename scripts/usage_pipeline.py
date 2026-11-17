@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -28,6 +29,7 @@ try:  # noqa: E402
         submit_query,
         wait_for_job,
     )
+    from .publish_static_spaces import StaticSpacesPublishError, publish_static_space
 except ImportError:  # direct execution through wrapper scripts
     from datalego_client import (
         DataLegoError,
@@ -37,6 +39,7 @@ except ImportError:  # direct execution through wrapper scripts
         submit_query,
         wait_for_job,
     )
+    from publish_static_spaces import StaticSpacesPublishError, publish_static_space
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +72,14 @@ def _date_from_text(value: str) -> date:
 
 def date_text(value: date) -> str:
     return value.strftime("%Y%m%d")
+
+
+def display_date(value: str) -> str:
+    """Format query dates for human-readable progress logs."""
+    text = str(value).replace("-", "")
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    return str(value)
 
 
 def previous_complete_week(today: date | None = None) -> tuple[str, str]:
@@ -445,39 +456,66 @@ def github_commit_message(mode: str, start: str, end: str, reconciliation: dict[
     return f"用量数据更新：{period}查询 {start} ~ {end}{detail}"
 
 
-def push_dashboard_updates(message: str) -> bool:
+class GitHubPublishError(RuntimeError):
+    """Raised when a saved dashboard cannot be committed or published."""
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=PROJECT_ROOT, capture_output=True,
+            text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GitHubPublishError(f"Git 操作失败：{exc}") from exc
+    if result.returncode != 0:
+        raise GitHubPublishError((result.stderr or result.stdout).strip())
+    return result
+
+
+def push_dashboard_updates(message: str, *, commit_changes: bool = True) -> bool:
     """Commit the embedded dashboard and push it to the configured GitHub remote."""
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--", "index.html"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    if not status.stdout.strip():
-        print("看板文件没有变化，跳过 GitHub 提交和推送。")
+    if commit_changes and _git("status", "--porcelain", "--", "index.html").stdout.strip():
+        _git("add", "--", "index.html")
+        _git("commit", "-m", message, "--only", "--", "index.html")
+        print("[GitHub] index.html 已提交到本地。")
+    pending = _git(
+        "log", "-1", "--format=%H", "HEAD", "--not", "--remotes=origin", "--", "index.html",
+    ).stdout.strip()
+    if not pending:
+        print("[GitHub] 没有待推送的看板提交。")
         return False
-    subprocess.run(["git", "add", "--", "index.html"], cwd=PROJECT_ROOT, check=True)
-    commit = subprocess.run(
-        ["git", "commit", "-m", message],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never"}
+    transient_errors = (
+        "connection was reset", "connection reset", "could not resolve host",
+        "could not resolve proxy", "failed to connect", "connection timed out",
+        "operation timed out", "connection closed", "remote end hung up",
+        "early eof", "empty reply from server", "http 502", "http 503", "http 504",
+        "returned error: 502", "returned error: 503", "returned error: 504",
     )
-    if commit.returncode != 0:
-        detail = (commit.stderr or commit.stdout).strip()
-        raise DataLegoError(f"Git 提交失败：{detail}")
-    push = subprocess.run(
-        ["git", "push", "origin", "HEAD"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if push.returncode != 0:
-        detail = (push.stderr or push.stdout).strip()
-        raise DataLegoError(f"GitHub 推送失败：{detail}")
-    print(f"已提交并推送 GitHub：{message}")
-    return True
+    for attempt in range(1, 4):
+        print(f"[GitHub] 推送已有提交（第 {attempt}/3 次，单次最多 60 秒）……")
+        try:
+            push = subprocess.run(
+                ["git", "push", "origin", "HEAD"], cwd=PROJECT_ROOT,
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+            if push.returncode == 0:
+                print("[GitHub] 推送成功。")
+                return True
+            detail = (push.stderr or push.stdout).strip()
+            retryable = any(error in detail.lower() for error in transient_errors)
+        except subprocess.TimeoutExpired:
+            detail = "GitHub 推送超过 60 秒未完成"
+            retryable = True
+        except OSError as exc:
+            raise GitHubPublishError(f"无法执行 Git 推送：{exc}") from exc
+        if not retryable or attempt == 3:
+            raise GitHubPublishError(detail)
+        delay = 2 ** attempt
+        print(f"[GitHub] 临时网络错误，{delay} 秒后重试：{detail}")
+        time.sleep(delay)
+    return False
 
 
 def _write_rows(path: Path, rows: Iterable[dict[str, Any]], columns: list[str]) -> None:
@@ -568,10 +606,14 @@ def run_query(start: str, end: str, mode: str, engine: str = "hive") -> Path:
     customers = load_customers()
     mapping = customer_map(customers)
     sql = build_usage_sql(start, end, mapping)
-    print(f"[{mode}] 1/6 查询范围：{start} ~ {end}，客户 VID：{len(mapping)} 个")
+    print(
+        f"[{mode}][开始] 查询范围：{display_date(start)} ~ {display_date(end)}；"
+        f"客户 VID：{len(mapping)} 个；引擎：{engine}"
+    )
+    print(f"[{mode}][1/7] 正在提交 DataLego 查询……")
     auth.init()
     job_id, status, _ = submit_query(sql, engine=engine)
-    print(f"[{mode}] 2/6 DataLego job={job_id}，初始状态：{status}")
+    print(f"[{mode}][2/7] DataLego 任务已提交：job={job_id}；初始状态：{status}")
     result = wait_for_job(job_id, label=f"{mode} 查询", engine=engine)
     if result is None:
         raise DataLegoError("DataLego 查询失败")
@@ -580,7 +622,7 @@ def run_query(start: str, end: str, mode: str, engine: str = "hive") -> Path:
     result_to_csv(result, raw_path)
     merged_path = USAGE_DIR / f"{mode}_raw.csv"
     _merge_raw_csv(merged_path, raw_rows)
-    print(f"[{mode}] 3/6 查询结果：{len(raw_rows)} 条，已写入 {raw_path}")
+    print(f"[{mode}][3/7] 查询完成：原始行 {len(raw_rows)} 条；已写入 {raw_path}")
     reconciliation: dict[str, int] = {}
     if mode == "weekly":
         daily_path = USAGE_DIR / "daily_raw.csv"
@@ -589,23 +631,32 @@ def run_query(start: str, end: str, mode: str, engine: str = "hive") -> Path:
         if reconciliation["overwritten"] or reconciliation["added"]:
             _merge_raw_csv(daily_path, reconciled_daily)
         print(
-            "[weekly] 4/6 daily 对账："
-            f"检查 {reconciliation['checked']} 条，"
-            f"覆盖 {reconciliation['overwritten']} 条，"
+            "[weekly][4/7] weekly 对账完成："
+            f"检查 {reconciliation['checked']} 条；"
+            f"覆盖 {reconciliation['overwritten']} 条；"
             f"补充 {reconciliation['added']} 条。"
         )
+    else:
+        print("[daily][4/7] daily 主数据：跳过 weekly 对账。")
     update_index = should_update_index(mode, reconciliation)
     update_dashboard(customers, update_index=update_index)
     record_query_end(mode, end)
-    print(f"[{mode}] 5/6 本地看板数据已更新：{USAGE_DIR / 'dashboard.json'}")
+    print(f"[{mode}][5/7] 本地看板数据已更新：{USAGE_DIR / 'dashboard.json'}")
     if update_index:
+        publish_static_space()
+        print(f"[{mode}][6/7] StaticSpaces 页面已同步。")
         pushed = push_dashboard_updates(github_commit_message(mode, start, end, reconciliation))
         if pushed:
-            print(f"[{mode}] 6/6 index.html 已更新并推送 GitHub。")
+            print(f"[{mode}][7/7] GitHub 已推送 index.html；任务完成。")
         else:
-            print(f"[{mode}] 6/6 index.html 无变化，跳过 GitHub 推送。")
+            print(f"[{mode}][7/7] index.html 已写入；没有待推送的 GitHub 提交。")
     else:
-        print(f"[{mode}] 6/6 daily 与 weekly 数据一致，跳过 index.html 更新和 GitHub 推送。")
+        print(f"[{mode}][6/7] index.html 未更新：weekly 与 daily 数据一致。")
+        pushed = push_dashboard_updates("补推已有看板提交", commit_changes=False)
+        if pushed:
+            print(f"[{mode}][7/7] GitHub 已补推已有提交；任务完成。")
+        else:
+            print(f"[{mode}][7/7] GitHub 没有待补推提交；任务完成。")
     return raw_path
 
 
@@ -618,14 +669,22 @@ def build_parser(mode: str) -> argparse.ArgumentParser:
     parser.add_argument("--engine", default="hive", help="DataLego query engine")
     parser.add_argument("--dry-run", action="store_true", help="只输出 SQL，不执行查询")
     parser.add_argument("--login", action="store_true", help="执行一次 Agora OAuth 登录")
+    parser.add_argument("--push-only", action="store_true", help="只补推已有看板提交，不查询或改写页面")
     parser.set_defaults(mode=mode)
     return parser
 
 
-def main(mode: str, argv: list[str] | None = None) -> int:
+def _main(mode: str, argv: list[str] | None = None) -> int:
     parser = build_parser(mode)
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(normalize_week_argument(raw_argv) if mode == "weekly" else raw_argv)
+    if args.push_only:
+        if args.start or args.end or getattr(args, "week", None) or args.login or args.dry_run:
+            parser.error("--push-only 不能与查询日期、--login 或 --dry-run 同时使用")
+        print(f"[{mode}][补推] 仅检查已有 GitHub 看板提交；跳过 DataLego、index.html 和 StaticSpaces。")
+        push_dashboard_updates("补推已有看板提交", commit_changes=False)
+        print(f"[{mode}][补推] 任务完成。")
+        return 0
     if args.login:
         interactive_login()
         return 0
@@ -649,7 +708,9 @@ def main(mode: str, argv: list[str] | None = None) -> int:
             else daily_query_range(last_end=last_end)
         )
         if query_range is None:
-            print(f"{mode} 查询已是最新，无需补数。")
+            print(f"[{mode}][跳过] 数据已是最新，无需补数；不更新 index.html 和 StaticSpaces。")
+            if not args.dry_run:
+                push_dashboard_updates("补推已有看板提交", commit_changes=False)
             return 0
         start, end = query_range
     sql = build_usage_sql(start, end, [row["vid"] for row in customers])
@@ -658,3 +719,17 @@ def main(mode: str, argv: list[str] | None = None) -> int:
         return 0
     run_query(start, end, mode, args.engine)
     return 0
+
+
+def main(mode: str, argv: list[str] | None = None) -> int:
+    try:
+        return _main(mode, argv)
+    except StaticSpacesPublishError as exc:
+        print(f"[StaticSpaces] 发布未完成：{exc}")
+        print("[StaticSpaces] 本地数据和 index.html 已保留；请修复令牌或网络后重新运行。")
+        return 1
+    except GitHubPublishError as exc:
+        print(f"[GitHub] 发布未完成：{exc}")
+        print("[GitHub] 本地数据和已有提交保留；此错误不代表 DataLego 查询失败。")
+        print(f"[GitHub] 排除错误后可运行 python scripts/{mode}_usage.py --push-only；下次正常运行也会检查补推。")
+        return 1

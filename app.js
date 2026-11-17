@@ -3,6 +3,7 @@
 
   var state = { view: "overview", payload: null, selectedWeek: "", overviewRows: [], weeklyRows: [], weeklyDailyRows: [], dailyRows: [] };
   var customerMetrics = window.TeleoperationDashboardMetrics;
+  var activeChartTooltip = null;
   var $ = function (id) { return document.getElementById(id); };
   var num = function (value) { return Number(value || 0); };
   var formatNumber = function (value) { return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(num(value)); };
@@ -235,7 +236,6 @@
     var svg = host.querySelector("svg");
     var tooltip = host.querySelector(".chart-tooltip");
     var crosshair = host.querySelector(".chart-crosshair");
-    var hitArea = host.querySelector(".chart-hit-area");
     var redraw = function () {
       host.querySelectorAll(".chart-series").forEach(function (node) { node.remove(); });
       var markup = series.map(function (itemSeries, seriesIndex) {
@@ -251,16 +251,20 @@
       }).join("");
       svg.insertAdjacentHTML("beforeend", markup);
       host.querySelectorAll(".chart-point").forEach(function (point) {
-        var show = function () { showTooltip(Number(point.getAttribute("data-index"))); };
+        var show = function () {
+          var rect = point.getBoundingClientRect();
+          showTooltip(Number(point.getAttribute("data-index")), { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+        };
         var hide = function () { hideTooltip(); };
-        point.addEventListener("mouseenter", show);
         point.addEventListener("focus", show);
-        point.addEventListener("mouseleave", hide);
         point.addEventListener("blur", hide);
       });
     };
-    var showTooltip = function (index) {
+    var pinned = false;
+    var showTooltip = function (index, event) {
       if (index < 0 || index >= points.length) return;
+      if (activeChartTooltip && activeChartTooltip.hide !== hideTooltip) activeChartTooltip.hide();
+      activeChartTooltip = { host: host, hide: hideTooltip };
       var title = labelFormatter(points[index][0]);
       var rowsMarkup = series.map(function (itemSeries, seriesIndex) {
         if (!visible[seriesIndex]) return "";
@@ -271,17 +275,71 @@
       tooltip.hidden = false;
       crosshair.setAttribute("x1", x(index));
       crosshair.setAttribute("x2", x(index));
-      crosshair.hidden = false;
-      tooltip.style.left = Math.min(92, Math.max(8, x(index) / width * 100)) + "%";
+      crosshair.removeAttribute("hidden");
+      var margin = 8, gap = event.pointerType === "touch" ? 28 : 18;
+      var viewportWidth = document.documentElement.clientWidth;
+      var viewportHeight = document.documentElement.clientHeight;
+      tooltip.style.maxWidth = Math.min(280, viewportWidth - margin * 2) + "px";
+      tooltip.style.maxHeight = Math.min(300, viewportHeight - margin * 2) + "px";
+      var tooltipRect = tooltip.getBoundingClientRect();
+      var anchor = svg.createSVGPoint();
+      anchor.x = x(index);
+      anchor.y = pad.t;
+      anchor = anchor.matrixTransform(svg.getScreenCTM());
+      var leftEdge = Math.min(event.clientX, anchor.x) - gap;
+      var rightEdge = Math.max(event.clientX, anchor.x) + gap;
+      var left = event.clientX > viewportWidth / 2 ? leftEdge - tooltipRect.width : rightEdge;
+      if (left < margin) left = rightEdge;
+      if (left + tooltipRect.width > viewportWidth - margin) left = leftEdge - tooltipRect.width;
+      left = Math.max(margin, Math.min(viewportWidth - margin - tooltipRect.width, left));
+      var top = Math.max(margin, Math.min(viewportHeight - margin - tooltipRect.height, event.clientY - tooltipRect.height / 2));
+      // Narrow screens may have no room beside the pointer; use the space above or below it.
+      if (left < rightEdge && left + tooltipRect.width > leftEdge) {
+        var spaceAbove = event.clientY - gap - margin;
+        var spaceBelow = viewportHeight - margin - event.clientY - gap;
+        tooltip.style.maxHeight = Math.max(0, Math.min(300, Math.max(spaceAbove, spaceBelow))) + "px";
+        tooltipRect = tooltip.getBoundingClientRect();
+        top = spaceAbove > spaceBelow ? event.clientY - gap - tooltipRect.height : event.clientY + gap;
+      }
+      tooltip.style.left = left + "px";
+      tooltip.style.top = top + "px";
     };
-    var hideTooltip = function () { tooltip.hidden = true; crosshair.hidden = true; };
-    hitArea.addEventListener("mousemove", function (event) {
-      var rect = svg.getBoundingClientRect();
-      var svgX = (event.clientX - rect.left) / rect.width * width;
-      var index = points.length === 1 ? 0 : Math.round((svgX - pad.l) / plotWidth * (points.length - 1));
-      showTooltip(Math.max(0, Math.min(points.length - 1, index)));
+    var hideTooltip = function () {
+      pinned = false;
+      tooltip.hidden = true;
+      tooltip.classList.remove("is-pinned");
+      crosshair.setAttribute("hidden", "");
+      if (activeChartTooltip && activeChartTooltip.hide === hideTooltip) activeChartTooltip = null;
+    };
+    var showAtPointer = function (event) {
+      var matrix = svg.getScreenCTM();
+      if (!matrix) return;
+      var point = svg.createSVGPoint();
+      point.x = event.clientX;
+      point.y = event.clientY;
+      point = point.matrixTransform(matrix.inverse());
+      if (point.x < pad.l || point.x > width - pad.r || point.y < pad.t || point.y > height - pad.b) {
+        hideTooltip();
+        return;
+      }
+      var index = points.length === 1 ? 0 : Math.round((point.x - pad.l) / plotWidth * (points.length - 1));
+      showTooltip(Math.max(0, Math.min(points.length - 1, index)), event);
+    };
+    svg.addEventListener("pointermove", function (event) {
+      if (!pinned && event.pointerType !== "touch") showAtPointer(event);
     });
-    hitArea.addEventListener("mouseleave", hideTooltip);
+    svg.addEventListener("pointerdown", function (event) {
+      if (event.pointerType === "touch") showAtPointer(event);
+    });
+    svg.addEventListener("click", function (event) {
+      showAtPointer(event);
+      pinned = !tooltip.hidden;
+      tooltip.classList.toggle("is-pinned", pinned);
+    });
+    svg.addEventListener("pointerleave", function (event) {
+      if (!pinned && event.pointerType !== "touch") hideTooltip();
+    });
+    svg.addEventListener("pointercancel", hideTooltip);
     if (options.legendHostId) {
       var legendHost = $(options.legendHostId);
       legendHost.innerHTML = series.map(function (itemSeries, seriesIndex) {
@@ -483,6 +541,7 @@
   }
 
   function renderAll() {
+    if (activeChartTooltip) activeChartTooltip.hide();
     if (state.view === "overview") renderOverview(); else if (state.view === "weekly") renderWeekly(); else renderDaily();
   }
 
@@ -533,6 +592,16 @@
     }
   }
 
+  document.addEventListener("pointerdown", function (event) {
+    if (activeChartTooltip && !activeChartTooltip.host.contains(event.target)) activeChartTooltip.hide();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && activeChartTooltip) activeChartTooltip.hide();
+  });
+  document.addEventListener("scroll", function (event) {
+    if (activeChartTooltip && !activeChartTooltip.host.contains(event.target)) activeChartTooltip.hide();
+  }, true);
+  window.addEventListener("resize", function () { if (activeChartTooltip) activeChartTooltip.hide(); });
   document.querySelectorAll(".view-tab").forEach(function (button) { button.addEventListener("click", function () { switchView(button.dataset.view); }); });
   ["start-date", "end-date", "customer-search"].forEach(function (id) { $(id).addEventListener("input", renderAll); });
   $("week-select").addEventListener("change", function () { state.selectedWeek = this.value; renderAll(); });
