@@ -7,6 +7,8 @@
   var $ = function (id) { return document.getElementById(id); };
   var num = function (value) { return Number(value || 0); };
   var formatNumber = function (value) { return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(num(value)); };
+  var formatMinutes = function (value) { return new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num(value) / 60); };
+  var formatAxisMinutes = function (value) { return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(num(value) / 60); };
   var dateText = function (value) { return String(value || "").replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3"); };
   var weekFromDate = function (value) {
     var text = String(value || "").replace(/-/g, "");
@@ -155,9 +157,9 @@
 
   function renderKpis(prefix, rows, periodText) {
     var totals = sumRows(rows);
-    $(prefix + "-kpi-audio").textContent = formatNumber(totals.audio);
-    $(prefix + "-kpi-video").textContent = formatNumber(totals.video);
-    $(prefix + "-kpi-total").textContent = formatNumber(totals.total);
+    $(prefix + "-kpi-audio").textContent = formatMinutes(totals.audio);
+    $(prefix + "-kpi-video").textContent = formatMinutes(totals.video);
+    $(prefix + "-kpi-total").textContent = formatMinutes(totals.total);
     $(prefix + "-kpi-customers").textContent = formatNumber(totals.customers.size);
     if ($(prefix + "-kpi-period")) $(prefix + "-kpi-period").textContent = periodText;
   }
@@ -199,12 +201,15 @@
     var rawMax = Math.max.apply(null, points.map(function (item) {
       return Math.max.apply(null, series.map(function (itemSeries) { return item[1][itemSeries.key] || 0; }));
     }).concat([1]));
-    var roughStep = rawMax / 4;
-    var magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
-    var fraction = roughStep / magnitude;
-    var niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-    var tickStep = niceFraction * magnitude;
-    var max = Math.ceil(rawMax / tickStep) * tickStep;
+    var rawMaxMinutes = rawMax / 60;
+    var roughStepMinutes = Math.max(1, rawMaxMinutes / 4);
+    var magnitude = Math.pow(10, Math.floor(Math.log10(roughStepMinutes)));
+    var fraction = roughStepMinutes / magnitude;
+    var niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 3 ? 3 : fraction <= 5 ? 5 : 10;
+    var tickStepMinutes = niceFraction * magnitude;
+    var maxMinutes = Math.ceil(rawMaxMinutes / tickStepMinutes) * tickStepMinutes;
+    var tickStep = tickStepMinutes * 60;
+    var max = maxMinutes * 60;
     var x = function (index) { return pad.l + (points.length === 1 ? plotWidth / 2 : index * plotWidth / (points.length - 1)); };
     var y = function (value) { return pad.t + plotHeight - value / max * plotHeight; };
     var smoothPath = function (values) {
@@ -223,7 +228,7 @@
     var grid = [];
     for (var tick = 0; tick <= max + tickStep / 100; tick += tickStep) {
       var lineY = y(tick);
-      grid.push('<line class="chart-grid" x1="' + pad.l + '" x2="' + (width - pad.r) + '" y1="' + lineY + '" y2="' + lineY + '"/><text class="chart-axis" x="8" y="' + (lineY + 4) + '">' + formatNumber(tick) + "</text>");
+      grid.push('<line class="chart-grid" x1="' + pad.l + '" x2="' + (width - pad.r) + '" y1="' + lineY + '" y2="' + lineY + '"/><text class="chart-axis" x="8" y="' + (lineY + 4) + '">' + formatAxisMinutes(tick) + "</text>");
     }
     grid = grid.join("") + '<line class="chart-axis-line" x1="' + pad.l + '" x2="' + pad.l + '" y1="' + pad.t + '" y2="' + (height - pad.b) + '"/>';
     var labels = points.map(function (item, index) {
@@ -245,7 +250,7 @@
         var areaPath = linePath + " L " + values[values.length - 1].x + " " + (height - pad.b) + " L " + values[0].x + " " + (height - pad.b) + " Z";
         var area = options.showArea === false || seriesIndex !== 0 ? "" : '<path class="chart-area" fill="url(#' + gradientId + ')" d="' + areaPath + '"/>';
         var pointsMarkup = values.map(function (point, index) {
-          return '<circle class="chart-point" cx="' + point.x + '" cy="' + point.y + '" r="3.5" fill="' + itemSeries.color + '" data-index="' + index + '" tabindex="0" aria-label="' + escapeHtml(itemSeries.label + " " + labelFormatter(points[index][0]) + " " + formatNumber(point.value)) + '"/>';
+          return '<circle class="chart-point" cx="' + point.x + '" cy="' + point.y + '" r="3.5" fill="' + itemSeries.color + '" data-index="' + index + '" tabindex="0" aria-label="' + escapeHtml(itemSeries.label + " " + labelFormatter(points[index][0]) + " " + formatMinutes(point.value)) + '"/>';
         }).join("");
         return '<g class="chart-series" data-series="' + seriesIndex + '"><path class="chart-line" stroke="' + itemSeries.color + '" d="' + linePath + '"/>' + area + pointsMarkup + "</g>";
       }).join("");
@@ -269,7 +274,7 @@
       var rowsMarkup = series.map(function (itemSeries, seriesIndex) {
         if (!visible[seriesIndex]) return "";
         var value = points[index][1][itemSeries.key] || 0;
-        return '<div class="chart-tooltip-row"><span><i style="background:' + itemSeries.color + '"></i>' + escapeHtml(itemSeries.label) + '</span><strong>' + formatNumber(value) + '</strong></div>';
+        return '<div class="chart-tooltip-row"><span><i style="background:' + itemSeries.color + '"></i>' + escapeHtml(itemSeries.label) + '</span><strong>' + formatMinutes(value) + '</strong></div>';
       }).join("");
       tooltip.innerHTML = '<div class="chart-tooltip-title">' + escapeHtml(title) + '</div>' + rowsMarkup;
       tooltip.hidden = false;
@@ -387,7 +392,7 @@
     host.innerHTML = ranked.map(function (item) {
       var audioWidth = item.total ? item.audio / max * 100 : 0;
       var videoWidth = item.total ? item.video / max * 100 : 0;
-      return '<div class="rank-row"><div class="rank-meta"><span class="rank-label">' + escapeHtml(item.name || "未登记客户") + " · " + escapeHtml(item.vid) + '</span><span class="rank-value">' + formatNumber(item.total) + '</span></div><div class="rank-track" aria-label="音频 ' + formatNumber(item.audio) + '，视频 ' + formatNumber(item.video) + '"><span class="rank-fill rank-audio" style="width:' + audioWidth + '%"></span><span class="rank-fill rank-video" style="width:' + videoWidth + '%"></span></div><div class="rank-breakdown"><span><i class="rank-dot rank-dot-audio"></i>音频 ' + formatNumber(item.audio) + '</span><span><i class="rank-dot rank-dot-video"></i>视频 ' + formatNumber(item.video) + '</span></div></div>';
+      return '<div class="rank-row"><div class="rank-meta"><span class="rank-label">' + escapeHtml(item.name || "未登记客户") + " · " + escapeHtml(item.vid) + '</span><span class="rank-value">' + formatMinutes(item.total) + '</span></div><div class="rank-track" aria-label="音频 ' + formatMinutes(item.audio) + '，视频 ' + formatMinutes(item.video) + '"><span class="rank-fill rank-audio" style="width:' + audioWidth + '%"></span><span class="rank-fill rank-video" style="width:' + videoWidth + '%"></span></div><div class="rank-breakdown"><span><i class="rank-dot rank-dot-audio"></i>音频 ' + formatMinutes(item.audio) + '</span><span><i class="rank-dot rank-dot-video"></i>视频 ' + formatMinutes(item.video) + '</span></div></div>';
     }).join("");
   }
 
@@ -422,15 +427,16 @@
   }
 
   function metricCells(row) {
-    return '<td class="number">' + formatNumber(row.audio_host) + '</td><td class="number">' + formatNumber(row.audio_viewer) + '</td><td class="number">' + formatNumber(row.audio_total) + '</td><td class="number">' + formatNumber(row.video_host) + '</td><td class="number">' + formatNumber(row.video_viewer) + '</td><td class="number">' + formatNumber(row.video_total) + '</td><td class="number">' + formatNumber(row.total) + '</td>';
+    return '<td class="number">' + formatMinutes(row.audio_host) + '</td><td class="number">' + formatMinutes(row.audio_viewer) + '</td><td class="number">' + formatMinutes(row.audio_total) + '</td><td class="number">' + formatMinutes(row.video_host) + '</td><td class="number">' + formatMinutes(row.video_viewer) + '</td><td class="number">' + formatMinutes(row.video_total) + '</td><td class="number">' + formatMinutes(row.total) + '</td>';
   }
 
-  function deltaText(current, previous) {
+  function deltaText(current, previous, formatter) {
+    formatter = formatter || formatMinutes;
     if (previous == null) return "—";
     var delta = current - previous;
-    if (previous === 0) return delta === 0 ? "—" : (delta > 0 ? "↑ " : "↓ ") + formatNumber(Math.abs(delta)) + "（新增）";
+    if (previous === 0) return delta === 0 ? "—" : (delta > 0 ? "↑ " : "↓ ") + formatter(Math.abs(delta)) + "（新增）";
     var pct = previous ? delta / previous * 100 : 0;
-    return (delta >= 0 ? "↑ " : "↓ ") + formatNumber(Math.abs(delta)) + "（" + (delta >= 0 ? "+" : "") + pct.toFixed(1) + "%）";
+    return (delta >= 0 ? "↑ " : "↓ ") + formatter(Math.abs(delta)) + "（" + (delta >= 0 ? "+" : "") + pct.toFixed(1) + "%）";
   }
 
   function deltaClass(current, previous) {
@@ -450,12 +456,12 @@
     var current = sumRows(currentRows), previous = previousRows.length ? sumRows(previousRows) : null;
     $("weekly-kpi-delta").textContent = "环比 " + (previous ? deltaText(current.total, previous.total) : "—");
     var cards = [
-      ["音频环比", current.audio, previous && previous.audio],
-      ["视频环比", current.video, previous && previous.video],
-      ["音视频环比", current.total, previous && previous.total],
-      ["活跃客户环比", current.customers.size, previous && previous.customers.size]
+      ["音频环比", current.audio, previous && previous.audio, formatMinutes],
+      ["视频环比", current.video, previous && previous.video, formatMinutes],
+      ["音视频环比", current.total, previous && previous.total, formatMinutes],
+      ["活跃客户环比", current.customers.size, previous && previous.customers.size, formatNumber]
     ];
-    $("weekly-analysis").innerHTML = cards.map(function (item) { return '<article class="analysis-card"><span>' + item[0] + '</span><strong>' + (item[2] == null ? "—" : deltaText(item[1], item[2])) + '</strong><small>' + (item[2] == null ? "暂无上周数据" : "对比上一自然周") + '</small></article>'; }).join("");
+    $("weekly-analysis").innerHTML = cards.map(function (item) { return '<article class="analysis-card"><span>' + item[0] + '</span><strong>' + (item[2] == null ? "—" : deltaText(item[1], item[2], item[3])) + '</strong><small>' + (item[2] == null ? "暂无上周数据" : "对比上一自然周") + '</small></article>'; }).join("");
   }
 
   function renderOverview() {
@@ -484,35 +490,65 @@
     renderWeeklyTable(rows, previousRows);
   }
 
-  function renderDailyAnalysis(pair, latestRows, previousRows, comparisons) {
-    var current = sumRows(latestRows), previous = previousRows.length ? sumRows(previousRows) : null;
-    var increases = comparisons.filter(function (item) { return item.delta.total > 0; }).sort(function (a, b) { return b.delta.total - a.delta.total; });
-    var decreases = comparisons.filter(function (item) { return item.delta.total < 0; }).sort(function (a, b) { return a.delta.total - b.delta.total; });
-    var audioShare = current.total ? (current.audio / current.total * 100).toFixed(1) : "0.0";
-    var videoShare = current.total ? (current.video / current.total * 100).toFixed(1) : "0.0";
-    var lines = [];
-    if (!pair.latestDate) {
-      lines.push({ className: "analysis-context", text: "当前没有可用的 daily 数据，请先运行 daily 查询脚本。" }, { className: "analysis-summary", text: "每日数据解读将在下一次 daily 数据生成后自动填充。" });
-    } else {
-      lines.push({ className: "analysis-context", text: "最新数据日期：" + dateText(pair.latestDate) + "；对比日期：" + (pair.previousDate ? dateText(pair.previousDate) : "暂无前一可用日") + "。" }, { className: "analysis-summary", text: "最新日音视频总量为 " + formatNumber(current.total) + " 秒" + (previous ? "，环比 " + deltaText(current.total, previous.total) + "。" : "。") }, { className: "analysis-structure", text: "用量结构：音频占 " + audioShare + "%（" + formatNumber(current.audio) + " 秒），视频占 " + videoShare + "%（" + formatNumber(current.video) + " 秒）。" }, { className: "analysis-change", text: "客户变化：" + (increases.length ? increases[0].name + " 增加最多（" + deltaText(increases[0].current.total, increases[0].previous.total) + "）" : "暂无客户用量增加") + "；" + (decreases.length ? decreases[0].name + " 减少最多（" + deltaText(decreases[0].current.total, decreases[0].previous.total) + "）" : "暂无客户用量减少") + "。" }, { className: "analysis-activity", text: "活跃客户数：最新日 " + current.customers.size + " 家" + (previous ? "，环比 " + deltaText(current.customers.size, previous.customers.size) + "。" : "，暂无前一可用日对比。") });
-    }
-    $("daily-analysis").innerHTML = lines.map(function (line) { return '<p class="' + line.className + '">' + escapeHtml(line.text) + "</p>"; }).join("");
+  function dailyAnalysisRow(className, label, content) {
+    return '<div class="analysis-row ' + className + '"><span class="analysis-label">' + escapeHtml(label) + '：</span><div class="analysis-detail">' + content + '</div></div>';
   }
 
-  function renderDailyAlerts(pair, comparisons) {
+  function renderDailyAnalysis(pair, latestRows, previousRows, comparisons) {
+    var current = sumRows(latestRows), previous = pair.previousDate ? sumRows(previousRows) : null;
+    var host = $("daily-analysis");
+    if (!pair.latestDate) {
+      host.innerHTML = dailyAnalysisRow("analysis-context", "数据日期", "当前没有可用的 daily 数据，请先运行 daily 查询脚本。") + dailyAnalysisRow("analysis-summary", "音视频总量", "每日数据解读将在下一次 daily 数据生成后自动填充。");
+      return;
+    }
+    var changeText = function (currentValue, previousValue, unit, formatter) {
+      formatter = formatter || formatMinutes;
+      var delta = currentValue - previousValue;
+      if (!delta) return "与前一日持平";
+      var ratio = previousValue ? "（" + (delta > 0 ? "+" : "") + (delta / previousValue * 100).toFixed(1) + "%）" : "（新增）";
+      return (delta > 0 ? "增加 " : "减少 ") + formatter(Math.abs(delta)) + " " + unit + ratio;
+    };
+    var ranking = function (increasing) {
+      if (!previous) return "暂无前一可用日，暂时无法比较。";
+      var ranked = comparisons.filter(function (item) { return increasing ? item.delta.total > 0 : item.delta.total < 0; }).sort(function (a, b) { return increasing ? b.delta.total - a.delta.total : a.delta.total - b.delta.total; }).slice(0, 3);
+      if (!ranked.length) return increasing ? "暂无客户用量增加。" : "暂无客户用量减少。";
+      return '<ol class="analysis-ranking">' + ranked.map(function (item) {
+        return '<li><strong>' + escapeHtml(item.name) + '</strong>：<strong>' + escapeHtml(changeText(item.current.total, item.previous.total, "分钟")) + '</strong></li>';
+      }).join("") + '</ol>';
+    };
+    var shareText = function (label, value) {
+      var share = current.total ? (value / current.total * 100).toFixed(1) : "0.0";
+      return label + '占 <strong>' + share + '%</strong>（' + formatMinutes(value) + ' 分钟）';
+    };
+    var activity = '最新日 <strong>' + current.customers.size + ' 家</strong>';
+    activity += previous ? '，前一日 <strong>' + previous.customers.size + ' 家</strong>，<strong>' + escapeHtml(changeText(current.customers.size, previous.customers.size, "家", formatNumber)) + '</strong>。' : '，暂无前一可用日对比。';
+    host.innerHTML = [
+      dailyAnalysisRow("analysis-context", "数据日期", "最新日 " + escapeHtml(dateText(pair.latestDate)) + "；对比日 " + (pair.previousDate ? escapeHtml(dateText(pair.previousDate)) : "暂无前一可用日") + "。"),
+      dailyAnalysisRow("analysis-summary", "音视频总量", '最新日 <strong>' + formatMinutes(current.total) + ' 分钟</strong>' + (previous ? '，环比 <strong>' + escapeHtml(deltaText(current.total, previous.total)) + '</strong>。' : '。')),
+      dailyAnalysisRow("analysis-structure", "用量结构", '<div>' + shareText("音频", current.audio) + '，' + shareText("视频", current.video) + '。</div><div>' + shareText("主播", current.host) + '，' + shareText("观众", current.viewer) + '。</div>'),
+      dailyAnalysisRow("analysis-activity", "活跃客户数变化", activity),
+      dailyAnalysisRow("analysis-growth", "TOP3 增长客户", ranking(true)),
+      dailyAnalysisRow("analysis-decrease", "TOP3 减少客户", ranking(false))
+    ].join("");
+  }
+
+  function renderDailyAlerts(pair) {
     var host = $("daily-alerts");
     if (!pair.latestDate || !pair.previousDate) {
-      host.innerHTML = '<div class="daily-alert-empty"><strong>异常警告</strong><span>暂无前一可用日，暂时无法判断下滑异常。</span></div>';
+      host.innerHTML = dailyAnalysisRow("analysis-alert", "⚠ 异常警告", !pair.latestDate ? "暂无 daily 数据，暂时无法判断业务变化。" : "暂无前一可用日，暂时无法判断业务变化。");
       return;
     }
-    var alerts = customerMetrics.buildDailyAlerts(comparisons);
+    var alerts = customerMetrics.buildDailyAlerts(state.dailyRows, { customers: state.payload && state.payload.customers, query: $("customer-search").value });
     if (!alerts.length) {
-      host.innerHTML = '<div class="daily-alert-clear"><strong>异常警告</strong><span>未发现音视频总量下滑 30% 以上且前一日用量达到 1,000 秒的客户。</span></div>';
+      host.innerHTML = dailyAnalysisRow("analysis-alert", "⚠ 异常警告", "未发现可确认的突然归零或连续3天下降。连续下降需最近4个自然日数据完整，缺失整日数据时暂不判断。");
       return;
     }
-    host.innerHTML = '<div class="daily-alert-heading"><strong>异常警告</strong><span>音视频总量显著下滑客户</span></div>' + alerts.map(function (alert) {
-      return '<div class="daily-alert-row"><span class="daily-alert-name">' + escapeHtml(alert.name) + '</span><span class="daily-alert-detail">环比下降 ' + (alert.ratio * 100).toFixed(1) + '%，减少 ' + formatNumber(alert.drop) + ' 秒</span></div>';
-    }).join("");
+    host.innerHTML = dailyAnalysisRow("analysis-alert", "⚠ 异常警告", '<ul class="analysis-ranking">' + alerts.map(function (alert) {
+      var reasons = alert.types.map(function (type) { return type === "zero" ? "突然归零" : "连续3天下降"; }).join("、");
+      var history = alert.history.map(function (point) { return escapeHtml(dateText(point.date).slice(5)) + ' <strong>' + formatMinutes(point.total) + ' 分钟</strong>'; }).join(" → ");
+      var missing = alert.history[alert.history.length - 1].hasRecord ? "" : "；当日无用量记录，按 0 统计";
+      return '<li><strong>' + escapeHtml(alert.name) + '</strong>：<strong>' + reasons + '</strong>（' + history + '）' + missing + '。</li>';
+    }).join("") + '</ul>');
   }
 
   function renderDailyTable(pair) {
@@ -525,7 +561,7 @@
     var customerMap = new Map(customers.map(function (customer) { return [String(customer.vid), customer]; }));
     body.innerHTML = comparisons.map(function (comparison) {
       var customer = customerMap.get(comparison.vid) || {};
-      return '<tr><td>' + escapeHtml(comparison.name) + '</td><td>' + escapeHtml(comparison.vid) + '</td><td>' + escapeHtml(customer.sale || "") + '</td><td class="number">' + formatNumber(comparison.current.audio) + '</td><td class="number">' + formatNumber(comparison.previous.audio) + '</td><td class="number">' + deltaMarkup(comparison.current.audio, comparison.previous.audio) + '</td><td class="number">' + formatNumber(comparison.current.video) + '</td><td class="number">' + formatNumber(comparison.previous.video) + '</td><td class="number">' + deltaMarkup(comparison.current.video, comparison.previous.video) + '</td><td class="number">' + formatNumber(comparison.current.total) + '</td><td class="number">' + formatNumber(comparison.previous.total) + '</td><td class="number">' + deltaMarkup(comparison.current.total, comparison.previous.total) + '</td></tr>';
+      return '<tr><td>' + escapeHtml(comparison.name) + '</td><td>' + escapeHtml(comparison.vid) + '</td><td>' + escapeHtml(customer.sale || "") + '</td><td class="number">' + formatMinutes(comparison.current.audio) + '</td><td class="number">' + formatMinutes(comparison.previous.audio) + '</td><td class="number">' + deltaMarkup(comparison.current.audio, comparison.previous.audio) + '</td><td class="number">' + formatMinutes(comparison.current.video) + '</td><td class="number">' + formatMinutes(comparison.previous.video) + '</td><td class="number">' + deltaMarkup(comparison.current.video, comparison.previous.video) + '</td><td class="number">' + formatMinutes(comparison.current.total) + '</td><td class="number">' + formatMinutes(comparison.previous.total) + '</td><td class="number">' + deltaMarkup(comparison.current.total, comparison.previous.total) + '</td></tr>';
     }).join("");
     return comparisons;
   }
@@ -537,7 +573,7 @@
     renderKpis("daily", pair.latestRows, pair.latestDate ? (dateText(pair.latestDate) + (pair.previousDate ? " 对比 " + dateText(pair.previousDate) : "")) : "等待 daily 数据");
     var comparisons = renderDailyTable(pair);
     renderDailyAnalysis(pair, pair.latestRows, pair.previousRows, comparisons);
-    renderDailyAlerts(pair, comparisons);
+    renderDailyAlerts(pair);
   }
 
   function renderAll() {
